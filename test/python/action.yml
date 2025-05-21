@@ -75,8 +75,8 @@ runs:
             fi
           fi
           
-          uvx ${SHELL_PREFIX} coverage run --append --source=. --data-file=${COVERAGE_FILE} -m pytest ${ADDITIONAL_ARGS} --junit-xml=reports/python_tests/report.xml
-          uvx ${SHELL_PREFIX} coverage html --data-file=${COVERAGE_FILE}
+          ${SHELL_PREFIX} coverage run --append --source=. --data-file=${COVERAGE_FILE} -m pytest ${ADDITIONAL_ARGS} --junit-xml=reports/python_tests/report.xml
+          ${SHELL_PREFIX} coverage html --data-file=${COVERAGE_FILE}
           if [ -z "$XML_LOCATION" ];then
             XML_LOCATION="$(realpath reports/python_tests/report.xml)"
           else
@@ -87,7 +87,7 @@ runs:
           echo "COVERAGE_REPORT_LOCATION=${COVERAGE_REPORT_LOCATION}" >> "$GITHUB_OUTPUT"
           COV_SCORE=$(uvx coverage json --data-file=${COVERAGE_FILE} -q -o /dev/stdout | jq .totals.percent_covered | jq '.*100|round/100')
           echo "COVERAGE_SCORE=${COV_SCORE}" >> "$GITHUB_OUTPUT"
-          uvx ${SHELL_PREFIX} coverage report --data-file=${COVERAGE_FILE} -m --fail-under ${QUALITY_GATE}
+          ${SHELL_PREFIX} coverage report --data-file=${COVERAGE_FILE} -m --fail-under ${QUALITY_GATE}
           popd
         done
     - name: Publish Coverage score
