@@ -1,0 +1,31 @@
+## NOT PRODUCTION READY ##
+## PROTOTYPE ##
+name: "Gather Historical Security Findings"
+description: "A GitHub action to collect and store historical security findings"
+inputs:
+  token:
+    required: true
+    description: "A GitHub token for running GitHub CLI commands, most commonly the `GITHUB_TOKEN` secret"
+    type: string
+outputs:
+  SECURITY_FINDINGS_FILE:
+    description: "Name of the collection of security findings file created"
+    value: ${{ steps.get-sec-findings.outputs.SECURITY_FINDINGS_FILE }}
+runs:
+  using: "composite"
+  steps:
+    - name: Get Commits, PRs, its respective security findings, and append to file
+      id: get-sec-findings
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        git log $(git describe --tags --abbrev=0)..HEAD --oneline --format='%H' | \
+        xargs -I HASH gh pr list --search HASH --state merged --json number | \
+        jq '.[].number' | sort -u | xargs -I PR gh api \
+        -H "Accept: application/vnd.github+json" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        -X GET /repos/${{ github.repository }}/code-scanning/alerts -f pr=PR -f state=closed -f resolution=dismissed --paginate \
+        | jq -s 'add | unique_by(.number)' \
+        | cat >> "${{ runner.temp }}/historical_security_findings.json"
+        echo "SECURITY_FINDINGS_FILE=${{ runner.temp }}/historical_security_findings.json" >> $GITHUB_OUTPUT

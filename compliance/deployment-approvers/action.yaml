@@ -1,0 +1,36 @@
+name: "Gather Deployment Approvers"
+description: "A GitHub action to collect and store deployment approvers"
+inputs:
+  token:
+    required: true
+    description: "A GitHub token for running GitHub CLI commands, most commonly the `GITHUB_TOKEN` secret"
+    type: string
+outputs:
+  WORKFLOW_RUN_APPROVERS:
+    description: "Names of workflow run approvers"
+    value: ${{ steps.get-deploy-approvers.outputs.WORKFLOW_RUN_APPROVERS }}
+runs:
+  using: composite
+  steps:
+    - name: Get Deployment approvers and upload to s3
+      id: get-deploy-approvers
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        gh api \
+          -H "Accept: application/vnd.github+json" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          -X GET "/repos/zilvertonz/${{ github.event.repository.name }}/actions/runs/${{ github.run_id }}/approvals" \
+          | jq -r -s 'add | .[].user.login' \
+          | cat >> "${RUNNER_TEMP}/workflow_${{ github.run_id }}_approvers.txt"
+          echo "This is contents of approvers file"
+          cat ${RUNNER_TEMP}/workflow_${{ github.run_id }}_approvers.txt
+          echo "WORKFLOW_RUN_APPROVERS=${RUNNER_TEMP}/workflow_${{ github.run_id }}_approvers.txt" >> $GITHUB_OUTPUT
+    
+    - name: Upload to artifacts
+      id: upload-artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: deploy-approvers
+        path: ${{ steps.get-deploy-approvers.outputs.WORKFLOW_RUN_APPROVERS }}

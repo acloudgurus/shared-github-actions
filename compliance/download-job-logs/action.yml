@@ -1,0 +1,106 @@
+name: "Artifact Job Logs"
+description: "Download the run logs of a multiple jobs within the workflow and upload as a single artifact"
+inputs:
+  job_names:
+    required: true
+    description: "Multi-line list of job names to fetch logs for (one per line)"
+    type: string
+  token:
+    required: true
+    description: "A GitHub token for running GitHub CLI commands, most commonly the `GITHUB_TOKEN` secret"
+    type: string
+outputs:
+  log_file_names:
+    description: "Comma-separated list of the log file names created"
+    value: ${{ steps.get-job-logs.outputs.log_file_names }}
+  log_file_paths:
+    description: "Comma-separated list of the log file paths created"
+    value: ${{ steps.get-job-logs.outputs.log_file_paths }}
+  logs_folder:
+    description: "Absolute PATH to the folder containing all logs"
+    value: ${{ steps.get-job-logs.outputs.logs_folder }}
+runs:
+  using: "composite"
+  steps:
+    - name: Get Logs from Multiple Jobs
+      id: get-job-logs
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        JOB_NAMES: ${{ inputs.job_names }}
+        GITHUB_EVENT_REPO: ${{ github.event.repository.name }}
+        RUN_ID: ${{ github.run_id }}
+      run: |
+        # Initialize accumulators for outputs
+        LOG_FILE_NAMES=""
+        LOG_FILE_PATHS=""
+        LOGS_FOLDER="${RUNNER_TEMP}/job-logs"
+
+        # Create a folder to store all downloaded log files
+        mkdir -p "$LOGS_FOLDER"
+
+        # Read the multi-line input and loop over each job name
+        echo "$JOB_NAMES" | while IFS= read -r NAME; do
+          NAME=$(echo "$NAME" | xargs) # Trim whitespace
+
+          # Skip empty lines safely
+          if [ -z "$NAME" ]; then
+            continue
+          fi
+
+          echo "Searching jobs starting with: '$NAME'"
+
+          # Query GitHub API for all jobs in the workflow run
+          JOB_INFO_LIST=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /repos/zilvertonz/$GITHUB_EVENT_REPO/actions/runs/$RUN_ID/jobs \
+            | jq -c --arg NAME "$NAME" '.jobs[] | select(.name | startswith($NAME)) | { "id": .id, "name": .name }')
+
+          # If no jobs found matching this name, warn and skip (does NOT fail the whole action)
+          if [ -z "$JOB_INFO_LIST" ]; then
+            echo "No jobs found matching '$NAME'"
+            continue
+          fi
+
+          # Loop through each matching job (handles matric jobs + reusable workflow names)
+          echo "$JOB_INFO_LIST" | while IFS= read -r job; do
+            JOB_ID=$(echo "$job" | jq -r '.id') # Extract job ID
+            JOB_FULL_NAME=$(echo "$job" | jq -r '.name') # Extract job full name
+
+            LOG_FILE_NAME="workflow_${RUN_ID}_job_${JOB_ID}.txt"
+            LOG_FILE_PATH="${LOGS_FOLDER}/$LOG_FILE_NAME"
+
+            echo "Downloading logs for: $JOB_FULL_NAME (ID: $JOB_ID)"
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "/repos/zilvertonz/$GITHUB_EVENT_REPO/actions/jobs/$JOB_ID/logs" \
+              | cat > "$LOG_FILE_PATH"
+            
+            echo "Saved logs to $LOG_FILE_PATH"
+
+            # Collect file names and paths into comma-separated lists for outputs
+            LOG_FILE_NAMES="${LOG_FILE_NAMES}${LOG_FILE_NAME},"
+            LOG_FILE_PATHS="${LOG_FILE_PATHS}${LOG_FILE_PATH},"
+          done
+        done
+
+        # Remove trailing commas from the outputs
+        LOG_FILE_NAMES=${LOG_FILE_NAMES%,}
+        LOG_FILE_PATHS=${LOG_FILE_PATHS%,}
+
+        # Set outputs for later workflow steps
+        echo "log_file_names=$LOG_FILE_NAMES" >> $GITHUB_OUTPUT
+        echo "log_file_paths=$LOG_FILE_PATHS" >> $GITHUB_OUTPUT
+        echo "logs_folder=$LOGS_FOLDER" >> $GITHUB_OUTPUT
+
+    - name: Upload all logs as single artifact
+      id: upload-artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: combined-job-logs
+        path: ${{ steps.get-job-logs.outputs.logs_folder }}
+
+# | jq --arg JOB_NAME "$JOB_NAME" '.jobs[] | select(.name | startswith($JOB_NAME)) | .id')
+# uses startswith because of reusable workflow appending names

@@ -1,0 +1,72 @@
+name: "Verify Code Approvers"
+description: "A GitHub action to verify a compliant number of approvers on the current commit"
+inputs:
+  token:
+    required: true
+    description: "A GitHub token for running GitHub CLI commands, most commonly the `GITHUB_TOKEN` secret"
+    type: string
+  required_reviews:
+    required: false
+    description: "Number of required approvers"
+    default: 2
+outputs:
+  approver_list:
+    description: "Comma-separated list of approver emails"
+    value: ${{ steps.verify-two-approvers.outputs.approver_list }}
+runs:
+  using: "composite"
+  steps:
+    - name: Verify two approvers
+      id: verify-two-approvers
+      shell: bash
+      run: |
+        COMMIT_HASH=$(git log -1 --format='%H')
+
+        echo "This is the commit hash: $COMMIT_HASH"
+
+        APPROVERS=$(gh pr list \
+          --search "$COMMIT_HASH" --state merged --json latestReviews \
+          | jq -r '.[].latestReviews[] | select(.state=="APPROVED") | .author.login'
+        )
+
+        if ! [[ "$REQUIRED_REVIEWS" =~ ^[0-9]+$ ]]; then
+          echo "::error title=Invalid input::required_reviews must be a positive integer (got '$REQUIRED_REVIEWS')"
+          exit 1
+        fi
+
+        echo "Required number of approvers: $REQUIRED_REVIEWS"
+
+        if [ -z "$APPROVERS" ]; then
+          echo "::error title=Failed Validation::No approvers found or no matching pull request for commit $COMMIT_HASH"
+        fi
+
+        APPROVER_LIST=()
+        while IFS= read -r APPROVER; do
+          APPROVER_EMAIL=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /users/$APPROVER \
+            | jq -r '.email'
+          )
+          APPROVER_LIST+=("$APPROVER_EMAIL")
+        done <<< "$APPROVERS"
+
+        if [ "${#APPROVER_LIST[@]}" -lt "$REQUIRED_REVIEWS" ]; then
+          echo "::error title=Failed Validation::Need $REQUIRED_REVIEWS approvers"
+          exit 1
+        else
+          echo "$(IFS=,; echo "approver_list=${APPROVER_LIST[*]}")" >> $GITHUB_OUTPUT
+          echo "$(IFS=,; echo "approver_list=${APPROVER_LIST[*]}")"
+        fi
+
+        echo "${APPROVER_LIST[*]}" > approver_list.txt
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REQUIRED_REVIEWS: ${{ inputs.required_reviews }}
+
+    - name: Upload to artifacts
+      id: upload-artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: approver-list
+        path: approver_list.txt

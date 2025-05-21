@@ -1,0 +1,102 @@
+name: GitHub Release Creation
+
+description: "Tag a new version of the source code and create release notes"
+
+inputs:
+  tag_major_version:
+    required: false
+    default: true
+    type: string
+    description: "Maintain an additional tag pointing to the latest major version"
+  token:
+    required: true
+    description: "A GitHub token for running GitHub CLI commands, most commonly the `GITHUB_TOKEN` secret"
+    type: string
+  version_type:
+    required: true
+    description:
+      "Type of version associated with the code changes. This will be used to increment tag.
+      Selecting `infer_from_label` will require a pull request (PR) to be associated with the current commit and
+      one version label (`major`, `minor`, or `patch`) to be applied to the PR.
+      Selecting `infer_from_title` will require a PR to be associated with the current commit."
+    type: choice
+    options:
+      - major
+      - minor
+      - patch
+      - infer_from_label
+      - infer_from_title
+outputs:
+  version:
+    description: "Version tagged in git"
+    value: ${{ steps.create-tag-and-release.outputs.version }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Validate Version Type
+      if: ${{ ! contains(fromJson('["major", "minor", "patch", "infer_from_label", "infer_from_title"]'), inputs.version_type) }}
+      shell: bash
+      run: |
+        echo "::warning title=Invalid input::version_type must be one of the following values: 'major', 'minor', 'patch', 'infer_from_label', 'infer_from_title'"
+        exit 1
+
+    - name: Get PR Number
+      if: ${{ startsWith(inputs.version_type, 'infer') }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        PR_NUMBER=$(gh pr list --search "${{ github.sha }}" --state merged --json number --jq 'try(.[].number)')
+        if [ ! -n "$PR_NUMBER" ]; then
+          echo "::error title=Pull request not found::Unable to find pull request number associated with the current commit"
+          exit 1
+        else 
+          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+        fi
+
+    - name: Get PR Title
+      if: ${{ inputs.version_type == 'infer_from_title' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        echo "Getting PR title"
+        PR_TITLE=$(gh pr list --search "${{ github.sha }}" --state merged --json title --jq 'try(.[].title)')
+        echo "PR_TITLE=$PR_TITLE" >> $GITHUB_ENV
+
+    - name: Parse PR Title
+      if: ${{ inputs.version_type == 'infer_from_title' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: ${GITHUB_ACTION_PATH}/../common/parse-pr-title.sh
+
+    - name: Get PR label
+      if: ${{ inputs.version_type == 'infer_from_label' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: ${GITHUB_ACTION_PATH}/../common/fetch-version-label.sh
+
+    - name: Use input version
+      if: ${{ ! startsWith(inputs.version_type, 'infer') }}
+      shell: bash
+      env:
+        VERSION_TYPE: ${{ inputs.version_type }}
+      run: |
+        echo "VERSION_TYPE=$VERSION_TYPE" >> $GITHUB_ENV
+
+    - name: Create Tag and Release
+      shell: bash
+      if: ${{ env.VERSION_TYPE }}
+      id: create-tag-and-release
+      env:
+        TAG_MAJOR_VERSION: ${{ inputs.tag_major_version }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: ${GITHUB_ACTION_PATH}/scripts/create-tag-and-release.sh

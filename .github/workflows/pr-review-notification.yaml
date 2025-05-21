@@ -1,0 +1,36 @@
+name: PR Review Notification
+
+on:
+  pull_request:
+    types: 
+      - review_requested
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGION: us-east-1
+  ACCOUNT_NUMBER: 637423336322
+
+jobs:
+  CallEventServiceAPI:
+    name: Call Event Service API
+    runs-on: zilverton-private-x64-ubuntu
+    environment:
+      name: dev
+    steps:
+      - name: Authenticate via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.REGION }}
+          role-to-assume: "arn:aws:iam::${{ env.ACCOUNT_NUMBER }}:role/Enterprise/${{ github.event.repository.name }}-deployer"
+
+      - name: Send Deployment Results Notification
+        uses: zilvertonz/shared-github-actions/utility/notification@v1
+        with:
+          token: ${{ github.token }}
+          event_service_consumer: northstar
+          event_service_env: dev

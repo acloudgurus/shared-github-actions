@@ -1,0 +1,85 @@
+name: "Upload Artifacts to s3"
+description: "A GitHub action to upload artifacts to s3 audit bucket"
+inputs:
+  environment:
+    required: false
+    default: "prod"
+runs:
+  using: "composite"
+  steps:
+
+    - name: Set env vars
+      shell: bash
+      id: set-vars
+      run: |
+        # Default values (for prod)
+        
+        ENV="${{ inputs.environment }}"
+        echo "THIS IS THE ENV: $ENV"
+
+        S3_BUCKET="silverton-maa-global-artifactory-${ENV}"
+        ACCOUNT_NUMBER="905418164283"
+
+        if [[ "$ENV" == "dev" ]]; then
+          ACCOUNT_NUMBER="637423336322"
+          echo "THIS IS THE S3 BUCKET: $S3_BUCKET"
+        elif [[ "$ENV" == "test" ]]; then
+          ACCOUNT_NUMBER="058264401587"
+          echo "THIS IS THE S3 BUCKET: $S3_BUCKET"
+        fi
+
+        echo "S3_BUCKET=$S3_BUCKET" >> $GITHUB_ENV
+        echo "ACCOUNT_NUMBER=$ACCOUNT_NUMBER" >> $GITHUB_ENV
+        echo "ENV=$ENV" >> $GITHUB_ENV
+
+    - name: Authenticate via OIDC Role
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: "us-east-1"
+        role-to-assume: "arn:aws:iam::${{ env.ACCOUNT_NUMBER }}:role/Enterprise/shared-github-actions-deployer"
+        inline-session-policy: |
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Sid": "AllowAllActions",
+                "Effect": "Allow",
+                "Action": "*",
+                "Resource": "*" 
+              },
+              {
+                "Sid": "DenyS3PutObjectUnlessInAdjudicatorFolder",
+                "Effect": "Deny",
+                "Action": "s3:PutObject",
+                "NotResource": "arn:aws:s3:::${{ env.S3_BUCKET }}/adjudicator/${{ github.repository }}/*" 
+              }
+            ]
+          }
+
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        merge-multiple: true
+        path: combined-artifacts/
+
+    - name: prepare and upload
+      shell: bash
+      run: |
+        # Set s3 structure
+        REPO_NAME="${{ github.repository }}"
+        WORKFLOW_YEAR=$(date -u +"%Y")
+        WORKFLOW_MONTH=$(date -u +"%m")
+        WORKFLOW_DAY=$(date -u +"%d")
+        WORKFLOW_ID="${{ github.run_id }}"
+
+        # final s3 path
+        S3_KEY="adjudicator/${REPO_NAME}/year=${WORKFLOW_YEAR}/month=${WORKFLOW_MONTH}/day=${WORKFLOW_DAY}/workflow_${WORKFLOW_ID}.zip"
+
+        cd combined-artifacts
+        zip -r ../final-upload.zip *
+        cd ..
+        echo "artifacts zipped"
+
+        echo "uploading artifact to s3"
+
+        aws s3 cp final-upload.zip s3://${{ env.S3_BUCKET }}/${S3_KEY}

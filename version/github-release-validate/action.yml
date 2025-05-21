@@ -1,0 +1,83 @@
+name: GitHub Release Validation
+
+description: "Tag a new version of the source code and create release notes"
+
+inputs:
+  token:
+    required: true
+    description: "A GitHub token for running GitHub CLI commands, most commonly the `GITHUB_TOKEN` secret"
+    type: string
+  version_type:
+    required: true
+    description:
+      "Type of version associated with the code changes. This will be used to increment tag.
+      Selecting `infer_from_label` will require a pull request (PR) to be associated with the current commit and
+      one version label (`major`, `minor`, or `patch`) to be applied to the PR.
+      Selecting `infer_from_title` will require a PR to be associated with the current commit."
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Validate Version Type
+      if: ${{ ! contains(fromJson('["major", "minor", "patch", "infer_from_label", "infer_from_title"]'), inputs.version_type) }}
+      shell: bash
+      run: |
+        echo "::warning title=Invalid input::version_type must be one of the following values: 'major', 'minor', 'patch', 'infer_from_label', 'infer_from_title'"
+        exit 1
+
+    - name: Get PR Number
+      if: ${{ startsWith(inputs.version_type, 'infer') }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        PR_NUMBER=$(gh pr view $GITHUB_HEAD_REF --json number --jq '.number')
+        echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+
+    - name: Get PR Title
+      if: ${{ inputs.version_type == 'infer_from_title' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        echo "Getting PR title"
+        PR_TITLE=$(gh pr view $PR_NUMBER --json title --jq '.title')
+        echo "PR_TITLE=$PR_TITLE" >> $GITHUB_ENV
+
+    - name: Parse PR Title
+      if: ${{ inputs.version_type == 'infer_from_title' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: ${GITHUB_ACTION_PATH}/../common/parse-pr-title.sh
+
+    - name: Get PR label
+      if: ${{ inputs.version_type == 'infer_from_label' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: ${GITHUB_ACTION_PATH}/../common/fetch-version-label.sh
+
+    - name: Use input version
+      if: ${{ ! startsWith(inputs.version_type, 'infer') }}
+      shell: bash
+      env:
+        VERSION_TYPE: ${{ inputs.version_type }}
+      run: |
+        echo "VERSION_TYPE=$VERSION_TYPE" >> $GITHUB_ENV
+
+    - name: Comment Proposed Release Version
+      shell: bash
+      env:
+        TAG_MAJOR_VERSION: ${{ inputs.tag_major_version }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        if [ -z "$VERSION_TYPE" ]; then
+          body="Unable to determine next release version based on pull request configuration. If the intent is to create a release, revisit workflow and pull request configuration"
+        else
+          body="Next release version determined to be a \`$VERSION_TYPE\` increment"
+        fi
+        gh pr comment $PR_NUMBER --edit-last --body "$body" || gh pr comment $PR_NUMBER --body "$body"

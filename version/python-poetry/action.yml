@@ -1,0 +1,90 @@
+name: "Update Poetry Version"
+
+description: "Update Poetry Version"
+
+inputs:
+  token:
+    required: true
+    description: "A GitHub token for running GitHub CLI commands, most commonly the `GITHUB_TOKEN` secret"
+    type: string
+  version_type:
+    required: true
+    description:
+      "Type of version associated with the code changes. This will be used to increment poetry version.
+      Selecting `infer_from_label` will require a pull request (PR) to be associated with the current commit and
+      one version label (`major`, `minor`, or `patch`) to be applied to the PR.
+      Selecting `infer_from_title` will require a PR to be associated with the current commit."
+    type: choice
+    options:
+      - major
+      - minor
+      - patch
+      - infer_from_label
+      - infer_from_title
+  package_path:
+    required: true
+    description: "Path to the package to update"
+    type: string
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Get PR Number
+      if: ${{ startsWith(inputs.version_type, 'infer') }}
+      shell: bash
+      env:
+        PR_NUMBER: ${{ github.event.number }}
+      run: |
+        if [ ! -n "$PR_NUMBER" ]; then
+          echo "::error title=Pull request not found::Unable to find pull request number associated with the current commit"
+          exit 1
+        else 
+          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+        fi
+
+    - name: Get PR Title
+      if: ${{ inputs.version_type == 'infer_from_title' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        echo "Getting PR title"
+        PR_TITLE=$(gh pr view $PR_NUMBER --json title --jq '.title')
+        echo "PR_TITLE=$PR_TITLE" >> $GITHUB_ENV
+
+    - name: Parse PR Title
+      if: ${{ inputs.version_type == 'infer_from_title' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        SHA: ${{ github.sha }}
+      run: ${GITHUB_ACTION_PATH}/../common/parse-pr-title.sh
+
+    - name: Get PR label
+      if: ${{ inputs.version_type == 'infer_from_label' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: ${GITHUB_ACTION_PATH}/../common/fetch-version-label.sh
+
+    - name: Use input version
+      if: ${{ ! startsWith(inputs.version_type, 'infer') }}
+      shell: bash
+      env:
+        VERSION_TYPE: ${{ inputs.version_type }}
+      run: |
+        echo "VERSION_TYPE=$VERSION_TYPE" >> $GITHUB_ENV
+
+    - name: Update Poetry Version
+      shell: bash
+      if: ${{ env.VERSION_TYPE }}
+      env:
+        PACKAGE_PATH: ${{ inputs.package_path }}
+        CHANGE_BRANCH: ${{ github.head_ref }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: ${GITHUB_ACTION_PATH}/scripts/update_version.sh

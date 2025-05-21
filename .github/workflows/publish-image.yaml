@@ -1,0 +1,86 @@
+name: Publish Image
+on:
+  workflow_call:
+    inputs:
+      context:
+        type: string
+        required: true
+        description: Path to Dockerfile from .images
+      metadata-action_tags:
+        type: string
+        required: true
+        description: tags input for docker/metadata-action
+      tag_suffix:
+        type: string
+        description: Optional extra tag suffix
+      build-args:
+        type: string
+        description: |
+          see build-args in [docker/build-push-action under inputs](https://github.com/docker/build-push-action?tab=readme-ov-file#inputs)
+
+
+# Required on Job
+#    permissions:
+#      contents: read
+#      packages: write
+#      attestations: write
+#      id-token: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push-image:
+    runs-on: MA-Analytics-Runner # use this or another runner
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prep Vars
+        run: |
+          CONTEXT=${{ inputs.context }}
+          TAG_SUFFIX=${{ inputs.tag_suffix }}
+          SET_SUFFIX=$CONTEXT
+
+          if [[ -n "${TAG_SUFFIX}" ]]; then 
+            SET_SUFFIX=${SET_SUFFIX}-${TAG_SUFFIX}
+          fi
+
+          echo "SET_SUFFIX=${SET_SUFFIX}" >> $GITHUB_ENV
+
+      - name: Extract metadata (tags, labels) for Docker
+        # https://github.com/docker/metadata-action?tab=readme-ov-file#semver
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: ${{ inputs.metadata-action_tags }}
+          flavor: |
+            suffix=-${{ env.SET_SUFFIX }}
+
+      - name: Build and push Docker image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          # Use Dockerfile in the root of the repo
+          context: .images/${{ inputs.context }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ inputs.build-args }}
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+

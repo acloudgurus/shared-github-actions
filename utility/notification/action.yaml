@@ -1,0 +1,99 @@
+name: Webex Notifications
+
+description: |
+  Sends notifications to a Webex room or an individual user via the Event Service
+
+inputs:
+  token:
+    description: "A GitHub token for running GitHub CLI commands, most commonly the `GITHUB_TOKEN` secret"
+    required: true
+    type: string
+  event_service_consumer:
+    description: "Name of the Event Service API consumer. Example: northstar"
+    required: true
+    type: string
+  event_service_env:
+    description: "Environment name in which the Event Service API will be called. This can be omitted since the default is to call the `prod` Event Service API. Example: dev"
+    required: false
+    type: string
+    default: prod
+    options:
+      - dev
+      - test
+      - prod
+  webex_room_id:
+    description: "Webex room ID to which the notification should be sent (optional when action is used for a deployment notification). As a default, the notification will be sent to the person triggering the action if this input is not provided"
+    required: false
+    type: string
+  deployment_status:
+    description: "Status of an application deployment (required when action is used for deployment notification). It can be used to notify that a pipeline run or process is a success or failure"
+    required: false
+    type: string
+  deployment_env: 
+    description: "Environment in which the application is deployed (required when action is used for deployment notification)"
+    required: false
+    type: string
+  deployment_tag:
+    description: "Git tag associated with the deployment job (optional when action is used for a deployment notification)"
+    required: false
+    type: string
+
+runs:
+  using: "composite"
+  steps: 
+    - name: Build Issue Created Event
+      if: ${{ github.event_name == 'issues' && github.event.action == 'opened' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        ACTOR: ${{ github.actor }}
+        REPO: ${{ github.event.repository.name }}
+        REPO_LINK: ${{ github.event.repository.html_url }}
+        ISSUE_TITLE: ${{ github.event.issue.title }}
+        ISSUE_BODY: ${{ github.event.issue.body }}
+        ISSUE_URL: ${{ github.event.issue.html_url }}
+        WEBEX_ROOM_ID: ${{ inputs.webex_room_id }}
+      run: ${GITHUB_ACTION_PATH}/build-event-request/webex/issue-created.sh
+
+    - name: Build Review Request Event
+      if: ${{ github.event.action == 'review_requested' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        ACTOR: ${{ github.actor }}
+        REPO: ${{ github.event.repository.name }}
+        PR_LINK: ${{ github.event.pull_request._links.html.href }}
+        REVIEWER: ${{ github.event.pull_request.requested_reviewers[0].login }}
+      run: ${GITHUB_ACTION_PATH}/build-event-request/webex/review-request.sh
+
+    - name: Build Deployment Status Event
+      if: ${{ github.event_name == 'push' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        ACTOR: ${{ github.actor }}
+        REPO: ${{ github.event.repository.name }}
+        REPO_LINK: ${{ github.event.repository.html_url }}
+        BRANCH: ${{ github.ref_name }}
+        WEBEX_ROOM_ID: ${{ inputs.webex_room_id }}
+        DEPLOYMENT_STATUS: ${{ inputs.deployment_status }}
+        DEPLOYMENT_ENV: ${{ inputs.deployment_env }}
+        DEPLOYMENT_TAG: ${{ inputs.deployment_tag }}
+      run: ${GITHUB_ACTION_PATH}/build-event-request/webex/deployment-status.sh
+
+    - name: Get M2M Token
+      if: success()
+      id: get-m2m-token
+      uses: zilvertonz/maa-m2m-auth/actions/get-token@v1
+      with:
+        api_name: event-service
+        consumer: ${{ inputs.event_service_consumer }}
+        aws_account: ma-analytics-${{ inputs.event_service_env }}
+    
+    - name: Send Notifications
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        ACCESS_TOKEN: ${{ steps.get-m2m-token.outputs.access_token }}
+        EVENT_SERVICE_ENV: ${{ inputs.event_service_env }}
+      run: ${GITHUB_ACTION_PATH}/event-service-call/webex-notification.sh

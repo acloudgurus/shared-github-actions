@@ -1,0 +1,143 @@
+name: policy-as-code-tf
+description: |
+  Run checkov code scanning over a terraform module
+
+inputs:
+  token:
+    required: true
+    description: "A GitHub token for running GitHub CLI commands, most commonly the `GITHUB_TOKEN` or secret. Needed to push security events."
+    type: string
+  org_read_token:
+    required: true
+    description: "Always pass secrets.ORG_REPO_READ_ACCESS"
+    type: string
+  module:
+    required: true
+    description: "Directory path from the root to tf module (use full path from repo root)"
+    type: string
+  external-checks:
+    required: false
+    description: "Source for external checks. Defaults to https://github.com/zilvertonz/shared-checkov.git?ref=tag/v0"
+    type: string
+    default: "https://github.com/zilvertonz/shared-checkov.git?ref=tag/v0"
+  soft-fail:
+    description: "When true, don't exit non-zero if checkov checks fail. Defaults to false"
+    type: boolean
+    default: false
+  skip-check:
+    description: "When set, checks will be skipped. Wild cards are allowed, ie `ZCC_AWS_*`"
+    type: string
+
+runs:
+  using: composite
+  steps:
+    - name: Environmental Variables
+      shell: bash
+      run: |
+        module_base=$(basename "${{ inputs.module }}")
+        echo "OUTPUT_DIR=./out/${module_base}" >> $GITHUB_ENV
+        git config --global url."https://${{ inputs.org_read_token }}@github.com".insteadOf "https://github.com"
+
+
+    # - name: Install Dependencies
+    #   shell: bash
+    #   run: |
+    #     uv venv --python 3.12
+    #     uv pip install checkov sarif-tools
+        # pipx install --global checkov sarif-tools
+
+    - name: Prep Checkov Command
+      shell: bash
+      id: prep-checkov
+      env:
+        INPUT_EXT_CHECK: ${{ inputs.external-checks }}
+        INPUT_SOFT_FAIL: ${{ inputs.soft-fail }}
+        INPUT_SKIP_CHECK: ${{ inputs.skip-check }}
+      run: ${GITHUB_ACTION_PATH}/prep-checkov-command.sh
+
+    - name: Run Checkov
+      shell: bash
+      id: checkov
+      continue-on-error: true
+      run: |
+        # if errors are found, checkov will exit non-zero unless soft-fail
+        # is set to true
+        uvx checkov -d ${{ inputs.module }} -o sarif \
+          --output-file-path $OUTPUT_DIR \
+          --download-external-modules true \
+          --framework terraform ${{ env.EXTRA_ARG }}
+
+    - name: Checkov Summary
+      shell: bash
+      id: checkov-errors
+      env: 
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        # checking any errors or warnings
+        CHECKOV_ERROR_COUNT=$(jq '[.runs[].results[]] | length' < $OUTPUT_DIR/results_sarif.sarif)
+        echo "CHECKOV_ERROR_COUNT=$CHECKOV_ERROR_COUNT" >> $GITHUB_ENV
+        # TODO - surpress based on input. Maybe they don't want this to exit non-zero
+        summary=$(uvx --from sarif-tools sarif summary $OUTPUT_DIR)
+        echo "::group::Summary"
+        echo $summary
+        echo "::endgroup::"
+
+        # if it's not a PR, don't continue
+        if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          exit 0;
+        fi
+
+        #
+        # header and summary
+        echo "# Checkov Errors" >> COMMENT.md
+        # TODO - Handle dismissed findings
+        echo "> [!NOTE] " >> COMMENT.md
+        echo "> Some finding may be resolved via dismissle.. ">>COMMENT.md
+        echo "> Ignore if findings have already been dismissed." >> COMMENT.md
+        echo "" >> COMMENT.md
+        echo "$summary" >> COMMENT.md
+        echo "" >> COMMENT.md
+
+        # is there a finding file from the custom checkov checks
+        if [[ -f ./findings.log ]]; then
+          while read -r finding; do
+            id=$(echo $finding | jq -r .id)
+            name=$(echo $finding | jq -r .name)
+            guideline=$(echo $finding | jq -r .guideline)
+            description=$(echo $finding | jq -r .description)
+            path=$(echo $finding | jq -r .path)
+            start=$(echo $finding | jq -r .start)
+            end=$(echo $finding | jq -r .end)
+
+            echo "###  [$id]($guideline)" >> COMMENT.md
+            echo "> $name" >> COMMENT.md
+            echo '```' >> COMMENT.md
+            echo "$path:${start}-${end}" >> COMMENT.md
+            echo "" >> COMMENT.md
+            echo $description >> COMMENT.md
+            echo '```' >> COMMENT.md
+          done < <(jq -c . < ./findings.log)
+
+        fi
+
+        echo "[Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> COMMENT.md
+
+        PR_NUMBER=$(gh pr view $GITHUB_HEAD_REF --json number --jq '.number')
+        gh pr comment $PR_NUMBER --edit-last --body-file COMMENT.md || gh pr comment $PR_NUMBER --body-file COMMENT.md
+
+    - name: Upload SARIF File
+      id: upload
+      # if: ${{ steps.checkov.outcome == 'failure' }}
+      if: ${{ env.CHECKOV_ERROR_COUNT > 0 }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ env.OUTPUT_DIR }}
+        category: terraform-checkov
+        token: ${{ inputs.token }}
+
+    - name: Fail on Checkov Findings
+      shell: bash
+      if: ${{ env.CHECKOV_ERROR_COUNT > 0 && inputs.soft-fail == 'false' }}
+      run: |
+        echo "::error title=Run Checkov::Errors found from Checkov code-scan"
+        exit 1;

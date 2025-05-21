@@ -1,0 +1,123 @@
+---
+name: Python Code Scanning
+inputs:
+  reviewdog_version:
+    description: Review Dog version
+    required: false
+    default: "v0.20.1"
+  github_token:
+    description: 'GITHUB_TOKEN'
+    required: false
+    default: '${{ github.token }}'
+  reporter:
+    description: 'Reporter of reviewdog command [github-pr-check,github-pr-review].'
+    required: false
+    default: 'github-pr-check'
+  level:
+    description: 'Report level for reviewdog [info,warning,error]'
+    required: false
+    default: 'error'
+  workdir:
+    description: |
+      Working directory of where to run mypy command.
+      Relative to the root directory.
+    required: false
+    default: '.'
+  setup_command:
+    description: |
+      mypy setup command.
+      Runs when "setup_method" is "install" or required by "adaptive".
+      If you want to fix the version of mypy, set the value as in the following example.
+      "pip install mypy==1.6.0"
+    required: false
+    default: 'pip install mypy'
+  setup_method:
+    description: |
+      mypy setup method. Select from below.
+      "nothing" - no setup process.
+      This option expects the user to prepare the environment
+      (ex. previous workflow step executed "pip install -r requirements.txt").
+      If you do not want immediately package installation (e.g., in a poetry environment), must be this.
+      "adaptive" - Check "execute_command" with "--version" is executable.
+      If it can be executed, do the same as "nothing", otherwise do the same as "install".
+      "install" - execute "setup_command".
+
+      Incorrect values behave as "adaptive".
+    required: false
+    default: 'nothing'
+  execute_command:
+    description: |
+      mypy execute command.
+      Normally it is "mypy", but for example "poetry run mypy"
+      if you want to run at Poetry without activating the virtual environment.
+    required: false
+    default: 'mypy'
+  filter_mode:
+    description: |
+      Filtering mode for the reviewdog command [added,diff_context,file,nofilter].
+      Default is nofilter.
+    required: false
+    default: 'nofilter'
+  fail_on_error:
+    description: |
+      Exit code for reviewdog when errors are found [true,false]
+      Default is `false`.
+    required: false
+    default: 'false'
+  target:
+    description: |
+      Target files and/or directories of mypy command.
+      Enumerate in a space-separated list.
+      Relative to the working directory.
+    required: false
+    default: '.'
+  reviewdog_flags:
+    description: 'reviewdog flags (default: <none>)'
+    required: false
+    default: ''
+  mypy_flags:
+    description: 'mypy options (default: <none>)'
+    required: false
+    default: ''
+  output_json:
+    description: |
+      Use the JSON output format available in mypy 1.11 or higher.
+
+      This option defaults to false due to version limitations
+      and because it is still experimental.
+      Note the mypy version when setting to true.
+    required: false
+    default: 'false'
+
+permissions:
+  contents: read
+
+runs:
+  using: 'composite'
+  steps:
+  - name: Setup Reviewdog
+    id: setup_reviewdog
+    uses: reviewdog/action-setup@3f401fe1d58fe77e10d665ab713057375e39b887
+    with:
+      reviewdog_version: ${{ inputs.reviewdog_version }}
+  - name: Debug checking reviewdog works
+    run: reviewdog -version
+    shell: bash
+  - name: Run mypy
+    id: mypy_run
+    uses: tsuyoshicho/action-mypy@759c01eeb886d64bc678a015b8474dfe97a67a0d
+    with:
+      github_token: ${{ inputs.github_token }}
+      reporter: ${{ inputs.reporter }}
+      level: ${{ inputs.level }}
+      workdir: ${{ inputs.workdir }}
+      target: ${{ inputs.target }}
+      setup_command: ${{ inputs.setup_command }}
+      setup_method: ${{ inputs.setup_method }}
+      execute_command: ${{ inputs.execute_command }}
+      fail_on_error: ${{ inputs.fail_on_error }}
+      mypy_flags: '--strict-equality ${{ inputs.mypy_flags }}'
+      output_json: ${{ inputs.output_json }}
+      filter_mode: ${{ inputs.filter_mode }}
+      reviewdog_flags: ${{ inputs.reviewdog_flags }}
+

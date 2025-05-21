@@ -1,0 +1,75 @@
+---
+name: Python Install Dependencies
+inputs:
+  additional_install_arguments:
+    description: a space-separated string of arguments for the installation command (e.g. "-t package")
+    required: false
+    default: ""
+  toml_parent_dir:
+    description: Parent directory which contains one or more tomls in subdirectories
+    required: false
+    default: .
+  requirements_file:
+    description: Path to requirements file of dependencies
+    required: false
+    default: ""
+  environment_usage:
+    description: Which python environment manager used for installing dependencies
+    required: true
+    default: pip
+    type: choice
+    options:
+      - pip
+      - poetry
+      - pipenv
+  additional_dependencies:
+    description: a space-separated string of dependencies
+    required: false
+    default: ""
+  archived_package_path:
+    description: Path of archive file to install. Comma-separated for multiple packages. each package will correspond per toml path.
+    required: false
+    default: ""
+
+permissions:
+  contents: read
+runs:
+  using: composite
+  steps:
+    - name: Install Dependencies
+      env:
+        ADDITIONAL_DEPENDENCIES: ${{ inputs.additional_dependencies }}
+        REQUIREMENTS_FILE_PATH: ${{ inputs.requirements_file }}
+        ENVIRONMENT: ${{ inputs.environment_usage }}
+        PYPROJECT_TOML_DIR: ${{ inputs.toml_parent_dir }}
+        ARCHIVE_LOCATION: ${{ inputs.archived_package_path }}
+        ADDITIONAL_INSTALL_ARGS: ${{ inputs.additional_install_arguments }}
+      shell: bash
+      run: |
+        set -x
+        IFS=, read -a pkg_locations <<< "$ARCHIVE_LOCATION"
+        which uv > /dev/null || pipx install uv 
+        uv venv
+        working_dir=$PWD
+        cd ${PYPROJECT_TOML_DIR}
+
+        uv pip install -U $ENVIRONMENT ${ADDITIONAL_INSTALL_ARGS}
+
+        working_paths=()
+        working_paths=$(find . -type f -name "*.toml" -not -path "*/dist/*" -exec dirname {} \; | sort -u)
+
+        for dir in $working_paths
+        do
+          cd $dir
+          if [ "$ENVIRONMENT" != "pip" ];then 
+            SHELL_PREFIX="$ENVIRONMENT run"; 
+          fi
+          uvx poetry install
+          echo "${dir} built."
+
+          pushd ${working_dir}
+          cd ${PYPROJECT_TOML_DIR}
+        done
+
+        if [ -f "${REQUIREMENTS_FILE_PATH}" ]; then uvx $SHELL_PREFIX pip install -r ${REQUIREMENTS_FILE_PATH}; fi
+        uvx $SHELL_PREFIX pip install pytest coverage ${ADDITIONAL_DEPENDENCIES}

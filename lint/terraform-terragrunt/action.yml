@@ -1,0 +1,49 @@
+name: "Terraform/Terragrunt Linting"
+description: "Lint Terraform and Terragrunt code and optionally commit changes"
+inputs:
+  module:
+    required: true
+    description: "Full directory path from the repository root to the Terraform module"
+    type: string
+  tf_version:
+    description: "Terraform version to use"
+    type: string
+  tg_version:
+    description: "Terragrunt version to use"
+    type: string
+
+runs:
+  using: "composite"
+  steps:
+    - name: Terragrunt/Terraform Versions
+      env:
+        MODULE: ${{ inputs.module }}
+        TG_VERSION: ${{ inputs.tg_version }}
+        TF_VERSION: ${{ inputs.tf_version }}
+      shell: bash
+      run: ${GITHUB_ACTION_PATH}/../../deploy/common/discover-tf-versions.sh
+    - name: TG/TF Switch
+      shell: bash
+      run: |
+        tgswitch "$TG_VERSION"
+        tfenv install "$TF_VERSION"
+        tfenv use "$TF_VERSION"
+
+    - name: Terraform Lint
+      id: terraform-lint
+      continue-on-error: true
+      env:
+        TERRAGRUNT_NO_AUTO_INIT: true
+        TERRAGRUNT_LOG_LEVEL: error
+      shell: bash
+      run: |
+        TERRAGRUNT_WORKING_DIR=${{ inputs.module }} terragrunt fmt --check
+
+    - name: Terragrunt Lint
+      id: terragrunt-lint
+      env:
+        TERRAGRUNT_NO_AUTO_INIT: true
+        TERRAGRUNT_LOG_LEVEL: error
+      shell: bash
+      run: |
+        TERRAGRUNT_WORKING_DIR=${{ inputs.module }} terragrunt hclfmt --terragrunt-check

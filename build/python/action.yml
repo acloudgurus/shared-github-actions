@@ -1,0 +1,137 @@
+---
+name: Python Build Dependencies
+inputs:
+  build_output_path:
+    description: Output of Build Path
+    required: false
+    default: ./dist
+  build_format:
+    description: Sets whether the result of the build is in wheel format or in sdist format
+    required: false
+    type: string
+    default: wheel
+    options:
+      - wheel
+      - sdist
+  environment_usage:
+    description: Which python environment manager used for installing dependencies
+    required: true
+    default: pip
+    type: choice
+    options:
+      - pip
+      - poetry
+      - pipenv
+  toml_parent_dir:
+    description: Parent directory which contains one or more tomls in subdirectories
+    required: false
+    default: .
+  pre_run_command:
+    description: This is a command that will run at the beginning of each loop before running the build for each python env. This command should be passed by the repo leveraging this share action
+    type: string
+    required: false
+    default: nil
+
+outputs:
+  python_whl_location:
+    description: "If archive format is wheel, then location of built .whl. If multiple were built, then a comma-separated string."
+    value: ${{ steps.build_deps.outputs.PYTHON_WHL_LOCATION }}
+  python_sdist_location:
+    description: "If archive format is sdist, then location of built tar.gz. If multiple were built, then a comma-separated string."
+    value: ${{ steps.build_deps.outputs.PYTHON_SDIST_LOCATION }}
+  python_build_location:
+    description: "Directory of the Build Location. If multiple were built, then a comma-separated string."
+    value: ${{ steps.build_deps.outputs.PYTHON_BUILD_LOCATION }}
+
+permissions:
+  contents: read
+runs:
+  using: composite
+  steps:
+    - name: Check and build wheels
+      id: build_deps
+      shell: bash
+      env:
+        ENVIRONMENT: ${{ inputs.environment_usage }}
+        PYPROJECT_TOML_DIR: ${{ inputs.toml_parent_dir }}
+        BUILD_FORMAT: ${{ inputs.build_format }}
+
+      run: |
+        set -x
+        which uv > /dev/null || pipx install uv 
+        uv venv
+
+        working_dir=$PWD
+        cd ${PYPROJECT_TOML_DIR}
+
+        working_paths=()
+        working_paths=$(find . -type f -name "*.toml" -not -path "*/dist/*" -exec dirname {} \; | sort -u)
+        echo $working_paths
+
+        for dir in $working_paths
+        do
+  
+          if [ "$PRE_COMMAND" != "nil" ]; then
+            ${PRE_COMMAND}
+          else
+            continue
+          fi
+          
+          pushd ${dir}
+          workflow_hash=$(echo "Creating workflow hash" | python3 -m pip hash *.toml)
+
+          if [ -d "dist" ]; then
+            echo "dist directory exists"
+            cd dist
+            if [ -f "pyproject.toml" ];then
+              echo "toml exists"
+              existing_hash=$(echo "Creating existing hash" | python3 -m pip hash *.toml)
+            else
+              echo "toml does not exist"
+              existing_hash=''
+            fi
+          else
+            echo "dist directory does not exist"
+            mkdir dist
+            existing_hash=''
+          fi
+             
+          if [[ "$workflow_hash" == "$existing_hash" ]];then
+            echo "hash matches - build current dist/*.whl"
+            BUILD_OUTPUT_PATH=.
+          else
+            echo "Detected new toml file - Creating whl"
+            cp *.toml ./dist
+
+            BUILD_OUTPUT_PATH=./dist
+            uv pip install $ENVIRONMENT setuptools build wheel
+        
+            if [ "$ENVIRONMENT" == "poetry" ];then
+              uvx poetry config --list
+              uvx poetry --version
+              uvx poetry config installer.max-workers 4
+              uvx poetry build --format ${BUILD_FORMAT} -o ${BUILD_OUTPUT_PATH}
+            else
+              uvx python -m build --${BUILD_FORMAT} -o ${BUILD_OUTPUT_PATH}
+            fi
+          fi
+
+          if [ -z "$WHL_LOCATION$BUILD_LOCATION$SDIST_LOCATION" ];then
+            if [ "$BUILD_FORMAT" == "wheel" ];then WHL_LOCATION="$(realpath $(find ${BUILD_OUTPUT_PATH} -name *.whl))";fi
+            if [ "$BUILD_FORMAT" == "sdist" ];then SDIST_LOCATION="$(realpath $(find ${BUILD_OUTPUT_PATH} -name *.tar.gz))";fi
+            BUILD_LOCATION="$(realpath ${BUILD_OUTPUT_PATH})"
+          else
+            if [ "$BUILD_FORMAT" == "wheel" ];then WHL_LOCATION="$WHL_LOCATION,$(realpath $(find ${BUILD_OUTPUT_PATH} -name *.whl))";fi
+            if [ "$BUILD_FORMAT" == "sdist" ];then SDIST_LOCATION="$SDIST_LOCATION,$(realpath $(find ${BUILD_OUTPUT_PATH} -name *.tar.gz))";fi
+            BUILD_LOCATION="$BUILD_LOCATION,$(realpath ${BUILD_OUTPUT_PATH})"
+          fi
+
+          echo "PYTHON_WHL_LOCATION=$WHL_LOCATION" >> "$GITHUB_OUTPUT"
+          echo "PYTHON_SDIST_LOCATION=$SDIST_LOCATION" >> "$GITHUB_OUTPUT"
+          echo "PYTHON_BUILD_LOCATION=$BUILD_LOCATION" >> "$GITHUB_OUTPUT"
+
+          pushd ${working_dir}
+          cd ${PYPROJECT_TOML_DIR}
+
+        done
+     

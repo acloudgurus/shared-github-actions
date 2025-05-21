@@ -1,0 +1,64 @@
+name: Publish Feature Branch Images
+
+# this workflow providers test/feature branch images for testing and dev purposes
+# see ./tag-and-release.yaml for production grade image release
+
+on:
+  push:
+    branches:
+      # publish images for feature branchs for testing
+      - feat*
+    paths: 
+      - '.images/**'
+      - .github/workflows/**-images.yaml
+      - .github/workflows/**-image.yaml
+      # ignore readme updates
+      - '!.images/**/README.md'
+
+concurrency:
+  group: "image-deploy-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+  publish-images:
+    name: Publish Image
+
+    strategy:
+      matrix:
+        context:
+          - base
+          - maven
+          - nodejs
+          - glue4
+
+    uses: ./.github/workflows/publish-image.yaml
+    with:
+      context: ${{ matrix.context }}
+      metadata-action_tags: |
+        type=ref,event=branch
+
+  publish-images-k8s:
+    name: Publish Image K8s
+
+    strategy:
+      matrix:
+        version:
+          - 1.26.0
+          - 1.30.0
+          - 1.31.0
+
+    uses: ./.github/workflows/publish-image.yaml
+    with:
+      context: k8s
+      tag_suffix: ${{ matrix.version }}
+      metadata-action_tags: |
+        type=ref,event=branch
+      build-args: |
+        KUBECTL_VERSION=${{ matrix.version }}
+        

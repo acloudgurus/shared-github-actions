@@ -1,0 +1,93 @@
+name: "AWS Lambda Integration Test"
+description: "A GitHub action to invoke Lambda function and return status code"
+inputs:
+  token:
+    required: true
+    description: "A GitHub token for running GitHub CLI commands, most commonly the `GITHUB_TOKEN` secret"
+    type: string
+  function-name:
+    required: true
+    description: "Alarm name to trigger"
+    type: string
+  environment:
+    required: false
+    default: "prod"
+  payload:
+    required: false
+    default: "{}"
+  expected_status_code:
+    description: "Expected status code from the lambda response"
+    required: false
+    default: "200"
+runs:
+  using: composite
+  steps:
+    - name: Set env vars
+      shell: bash
+      id: set-vars
+      env:
+        ENV: ${{ inputs.environment }}
+      run: |
+        # Default values (for prod)
+        
+        echo "THIS IS THE ENV: $ENV"
+        ACCOUNT_NUMBER="905418164283"
+
+        if [[ "$ENV" == "dev" ]]; then
+          ACCOUNT_NUMBER="637423336322"
+        elif [[ "$ENV" == "test" ]]; then
+          ACCOUNT_NUMBER="058264401587"
+        fi
+
+        echo "ACCOUNT_NUMBER=$ACCOUNT_NUMBER" >> $GITHUB_OUTPUT
+        echo "ENV=$ENV" >> $GITHUB_OUTPUT
+
+    - name: Authenticate via OIDC Role
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: "us-east-1"
+        role-to-assume: "arn:aws:iam::${{ steps.set-vars.outputs.ACCOUNT_NUMBER }}:role/Enterprise/shared-github-actions-deployer"
+    
+    - name: Invoke Lambda
+      shell: bash
+      id: invoke
+      env:
+        FUNCTION_NAME: ${{ inputs.function-name }}
+        PAYLOAD: ${{ inputs.payload }}
+        EXPECTED_STATUS_CODE: ${{ inputs.expected_status_code }}
+      run: |
+        echo "Invoking Lambda function: $FUNCTION_NAME"
+        
+        INVOKE_RESULT=$(aws lambda invoke \
+          --function-name "$FUNCTION_NAME" \
+          --payload "$PAYLOAD" \
+          --cli-binary-format raw-in-base64-out \
+          output.json \
+          --output json)
+
+        echo "Invocation result:"
+        echo "$INVOKE_RESULT"
+
+        STATUS_CODE=$(echo "$INVOKE_RESULT" | jq -r '.StatusCode')
+
+        echo "Lambda invocation StatusCode: $STATUS_CODE"
+
+        if [ "$STATUS_CODE" -ne "$EXPECTED_STATUS_CODE" ]; then
+          echo "Unexpected status code: $STATUS_CODE. Expected: $EXPECTED_STATUS_CODE"
+          exit 1
+        fi
+
+        # Check if there's FunctionError in Invocation Result
+        FUNCTION_ERROR=$(echo "$INVOKE_RESULT" | jq -r '.FunctionError // empty')
+
+        if [ -n "$FUNCTION_ERROR" ]; then
+          echo "Lambda returned a FunctionError: $FUNCTION_ERROR"
+          exit 1
+        else
+          echo "No FunctionError found in Invocation Result"
+        fi
+
+        echo "Lambda integration test passed."
+
+        echo "Lambda reponse body:"
+        cat output.json | jq .

@@ -1,0 +1,55 @@
+name: "Gameday"
+description: "A GitHub action to set ALARM STATE"
+inputs:
+  token:
+    required: true
+    description: "A GitHub token for running GitHub CLI commands, most commonly the `GITHUB_TOKEN` secret"
+    type: string
+  alarm-name:
+    required: true
+    description: "Alarm name to trigger"
+    type: string
+  environment:
+    required: false
+    default: "prod"
+runs:
+  using: composite
+  steps:
+    - name: Set env vars
+      shell: bash
+      id: set-vars
+      run: |
+        # Default values (for prod)
+        
+        ENV="${{ inputs.environment }}"
+        echo "THIS IS THE ENV: $ENV"
+        ACCOUNT_NUMBER="905418164283"
+
+        if [[ "$ENV" == "dev" ]]; then
+          ACCOUNT_NUMBER="637423336322"
+        elif [[ "$ENV" == "test" ]]; then
+          ACCOUNT_NUMBER="058264401587"
+        fi
+
+        echo "ACCOUNT_NUMBER=$ACCOUNT_NUMBER" >> $GITHUB_ENV
+        echo "ENV=$ENV" >> $GITHUB_ENV
+
+    - name: Authenticate via OIDC Role
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: "us-east-1"
+        role-to-assume: "arn:aws:iam::${{ env.ACCOUNT_NUMBER }}:role/Enterprise/shared-github-actions-deployer"
+    
+    - name: Set alarm
+      shell: bash
+      id: set-alarm
+      run: |
+        # alarm state ALARM
+        aws cloudwatch set-alarm-state \
+          --alarm-name "${{ inputs.alarm-name }}" \
+          --state-value ALARM --state-reason "Gameday"
+
+        # alarm state OK
+        aws cloudwatch set-alarm-state \
+          --alarm-name "${{ inputs.alarm-name }}" \
+          --state-value OK --state-reason "Gameday"

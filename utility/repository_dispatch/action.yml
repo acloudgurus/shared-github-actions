@@ -1,0 +1,35 @@
+name: Deploy Playbook via Repo Dispatch
+
+description: Makes API call to deploy a workflow in a different repository via repository_dispatch
+
+inputs:
+  token:
+    description: "A GitHub token for running GitHub CLI commands, most commonly the `GITHUB_TOKEN` secret"
+    required: true
+    type: string
+  event_type:
+    description: "A required parameter to identify the workflow to dispatch"
+    required: true
+    type: string
+  repo_name:
+    description: "A required parameter to identify the repository to run the dispatch"
+    required: true
+    type: string
+runs:
+  using: "composite"
+  steps: 
+    - name: Call playbook's /dispatches via gh API
+      id: api-call
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        event_type: ${{ inputs.event_type }}
+        repo_name: ${{ inputs.repo_name }}
+      shell: bash
+      run: |
+        ## Under 'event_type=' make sure it matches repository_dispatch types in playbook's publish workflow ##
+        gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/zilvertonz/${{ inputs.repo_name }}/dispatches \
+            -f "event_type=${{ inputs.event_type }}"

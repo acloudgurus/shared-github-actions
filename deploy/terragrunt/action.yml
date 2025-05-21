@@ -1,0 +1,123 @@
+name: Terragrunt Deploy
+
+description: |
+  Deploy terraform infrastructure with terragrunt
+
+inputs:
+  module:
+    required: true
+    description: "Directory path from the root to tf module (use full path from repo root)"
+    type: string
+  terraform_action:
+    required: true
+    type: string
+  token:
+    required: true
+    description: "Github token for cross organization read-only permissions"
+    type: string
+  workspace:
+    required: true
+    description: "terrafrom workspace name"
+    type: string
+    default: default
+  tf_version:
+    description: |
+      Terraform version. See latest here: https://github.com/hashicorp/terraform/releases
+      NOTE: use `.terraform-version` files in the module or parent dir to the 
+        module. Passing inputs here will take priority.
+    type: string
+  tg_version:
+    description: |
+      Terragrunt version. See latest here: https://github.com/gruntwork-io/terragrunt/releases
+      NOTE: use `.terragrunt-version` files in the module or parent dir to the 
+        module. Passing inputs here will take priority.
+    type: string
+
+outputs:
+  terraform_outputs:
+    description: Outputs from an apply, in json format
+    value: ${{ steps.terraform_action.outputs.OUTPUTS_TF }}
+
+runs:
+  using: composite
+  steps:
+    - name: Terragrunt/Terraform Versions
+      shell: bash
+      env:
+        MODULE: ${{ inputs.module }}
+        TG_VERSION: ${{ inputs.tg_version }}
+        TF_VERSION: ${{ inputs.tf_version }}
+      run: ${GITHUB_ACTION_PATH}/../common/discover-tf-versions.sh
+
+    - name: Prepare execution
+      shell: bash
+      run: |
+        git config --global url."https://${{ inputs.token }}@github.com".insteadOf "https://github.com"
+        tgswitch "$TG_VERSION"
+        tfenv install "$TF_VERSION"
+        tfenv use "$TF_VERSION"
+
+        # set up arguments
+        DEFAULT_TFTG_CLI_ARGS="-no-color --terragrunt-non-interactive"
+        TFTG_CLI_ARGS=$DEFAULT_TFTG_CLI_ARGS
+        TFTG_CLI_ARGS_MODIFY="--auto-approve"
+
+        if [[ "${{ inputs.terraform_action }}" =~ (apply|destroy) ]]; then
+          # update with --auto-approve
+          TFTG_CLI_ARGS="$TFTG_CLI_ARGS $TFTG_CLI_ARGS_MODIFY"
+        fi
+
+        # save env vars
+        echo "DEFAULT_TFTG_CLI_ARGS=$DEFAULT_TFTG_CLI_ARGS" >> $GITHUB_ENV
+        echo "TFTG_CLI_ARGS=$TFTG_CLI_ARGS" >> $GITHUB_ENV
+        echo "TFTG_CLI_ARGS_MODIFY=$TFTG_CLI_ARGS_MODIFY" >> $GITHUB_ENV
+
+    - name: Add Terraform Default Provider Tags
+      shell: bash
+      run: |
+        # https://registry.terraform.io/providers/hashicorp/aws/latest/docs#argument-reference
+        # see "Example: Default tags from environment variables"
+        # These tags will automatically be added to default provider tags
+        TF_AWS_DEFAULT_TAGS_SourceRepo=${{ github.repositoryUrl }}
+        TF_AWS_DEFAULT_TAGS_SourceRepoID=${{ github.repository_id }}
+        echo "TF_AWS_DEFAULT_TAGS_SourceRepoID=$TF_AWS_DEFAULT_TAGS_SourceRepoID" >> $GITHUB_ENV
+        echo "TF_AWS_DEFAULT_TAGS_SourceRepo=$TF_AWS_DEFAULT_TAGS_SourceRepo" >> $GITHUB_ENV
+
+    - name: Terragrunt Init
+      shell: bash
+      run: |
+        TERRAGRUNT_WORKING_DIR=${{ inputs.module }} terragrunt init
+
+    - name: Terragrunt Workspace
+      if: ${{ ! startsWith(inputs.terraform_action, 'init') }}
+      shell: bash
+      run: |
+        TERRAGRUNT_WORKING_DIR=${{ inputs.module }} terragrunt workspace select -or-create=true ${{ inputs.workspace }}
+
+    - name: Terragrunt ${{ inputs.terraform_action }}
+      if: ${{ ! startsWith(inputs.terraform_action, 'init') }}
+      shell: bash
+      id: terraform_action
+      run: |
+        # if apply, plan, destroy (not output)
+        if [[ !("${{ inputs.terraform_action }}" =~ "output") ]]; then
+          TERRAGRUNT_WORKING_DIR=${{ inputs.module }} terragrunt ${{ inputs.terraform_action }} $TFTG_CLI_ARGS
+        fi
+
+        if [[ "${{ inputs.terraform_action }}" == "apply" || "${{ inputs.terraform_action }}" =~ "output" ]]; then
+          OUTPUTS_TF=$(terraform -chdir=${{ inputs.module }} output -json | jq -c .)
+          echo "OUTPUTS_TF=$OUTPUTS_TF"
+          echo "OUTPUTS_TF=$OUTPUTS_TF" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Terraform Workspace Cleanup (Switch Workspace)
+      if: ${{ startsWith(inputs.terraform_action, 'destroy') && inputs.workspace != 'default' }}
+      shell: bash
+      run: |
+        TERRAGRUNT_WORKING_DIR=${{ inputs.module }} terragrunt workspace select -or-create=true default
+
+    - name: Terraform Workspace Cleanup (Delete Workspace)
+      if: ${{ startsWith(inputs.terraform_action, 'destroy') && inputs.workspace != 'default' }}
+      shell: bash
+      run: |
+        TERRAGRUNT_WORKING_DIR=${{ inputs.module }} terragrunt workspace delete ${{ inputs.workspace }}

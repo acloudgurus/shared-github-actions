@@ -1,0 +1,43 @@
+---
+name: Python Linting
+inputs:
+  toml_parent_dir:
+    description: Parent directory of Pyproject TOML
+    required: true
+    default: .
+  additional_args:
+    description: Arguments for Ruff lint run (e.g. --show-fixes)
+    required: false
+    default: ""
+  environment_usage:
+    description: If running Ruff within a shell, specify shell
+    required: false
+    default: pip
+    type: choice
+    options:
+      - pip
+      - poetry
+      - pipenv
+
+permissions:
+  contents: write
+
+runs:
+  using: composite
+  steps:
+    - name: Lint with Ruff
+      shell: bash
+      env:
+        ADDITIONAL_ARGS: ${{ inputs.additional_args }}
+        ENVIRONMENT: ${{ inputs.environment_usage }}
+        PYPROJECT_TOML_DIR: ${{ inputs.toml_parent_dir }}
+      run: |
+        set -x
+        pushd ${PYPROJECT_TOML_DIR}
+
+        if [ "$ENVIRONMENT" != "pip" ];then SHELL_PREFIX="${ENVIRONMENT} run";fi
+
+        ${SHELL_PREFIX} pip install ruff
+
+        ${SHELL_PREFIX} ruff check ${ADDITIONAL_ARGS} --output-format=github .
+        popd

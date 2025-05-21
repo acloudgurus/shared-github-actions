@@ -1,0 +1,84 @@
+name: Tag and Release
+
+# this workflow is for releasing production grade actions and images
+#
+# 1. tag and release for gh actions
+# 2. use tags to generate new images based on those tags
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: "image-deploy-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: write
+  attestations: write
+  id-token: write
+  pull-requests: read
+
+
+jobs:
+  tag-and-release:
+    runs-on: MA-Analytics-Runner
+    outputs:
+      version: ${{ steps.tag-and-release.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tag and Release
+        uses: zilvertonz/shared-github-actions/version/github-release-create@main
+        id: tag-and-release
+        with:
+          tag_major_version: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version_type: "infer_from_title"
+
+  publish-images:
+    name: Publish Image
+    needs:
+      - tag-and-release
+
+    strategy:
+      matrix:
+        context:
+          - base
+          - maven
+          - nodejs
+          - glue4
+
+    uses: ./.github/workflows/publish-image.yaml
+    with:
+      context: ${{ matrix.context }}
+      metadata-action_tags: |
+        type=raw,value=${{ needs.tag-and-release.outputs.version }}
+        type=semver,pattern=v{{major}}.{{minor}},value=${{ needs.tag-and-release.outputs.version }}
+        type=semver,pattern=v{{major}},value=${{ needs.tag-and-release.outputs.version }}
+
+  publish-images-k8s:
+    name: Publish Image K8s
+    needs:
+      - tag-and-release
+
+    strategy:
+      matrix:
+        version:
+          - 1.26.0
+          - 1.30.0
+          - 1.31.0
+
+    uses: ./.github/workflows/publish-image.yaml
+    with:
+      context: k8s
+      tag_suffix: ${{ matrix.version }}
+      metadata-action_tags: |
+        type=raw,value=${{ needs.tag-and-release.outputs.version }}
+        type=semver,pattern=v{{major}}.{{minor}},value=${{ needs.tag-and-release.outputs.version }}
+        type=semver,pattern=v{{major}},value=${{ needs.tag-and-release.outputs.version }}
+      build-args: |
+        KUBECTL_VERSION=${{ matrix.version }}

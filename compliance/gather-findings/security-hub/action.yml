@@ -1,0 +1,112 @@
+name: "Gather AWS SecurityHub Findings"
+description: "A GitHub action to collect and security findings"
+inputs:
+  token:
+    required: true
+    description: "A GitHub token for running GitHub CLI commands, most commonly the `GITHUB_TOKEN` secret"
+    type: string
+runs:
+  using: "composite"
+  steps:
+    # 1. get all findings ( aws)
+    # 2. upload as artifact
+    - name: Get Commits, PRs, its respective security findings, and append to file
+      id: get-sec-findings
+      shell: bash
+      env:
+        FULL_REPO: ${{ github.repository }}
+        REF: ${{ github.ref }}
+        REPO_ID: ${{ github.repository_id }}
+        EVENT_NAME: ${{ github.event_name }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        REPO=${FULL_REPO#zilvertonz/}
+        TMP_DIR=$(mktemp -d)
+        echo "TMP_DIR=$TMP_DIR" >> $GITHUB_ENV
+
+        # echo "Gathering GHAS Findings"
+        # ${GITHUB_ACTION_PATH}/github-as-findings.sh $REPO $REF
+        # echo "Gathering Dependabot Findings"
+        # ${GITHUB_ACTION_PATH}/github-dependabot-findings.sh $REPO $REF 
+        echo "Gathering AWS SecurityHub Findings"
+        has_tagged_resources=$(aws resourcegroupstaggingapi get-resources --tag-filters Key=SourceRepoID,Values=${REPO_ID} | jq '.ResourceTagMappingList | length')
+        
+        if (( $has_tagged_resources < 1 )); then
+          echo "::error title=No resources found for this repository.:: \
+                Resources need to be tagged appropriately for these findings to be gathered. \
+          For more information, see: https://github.com/zilvertonz/shared-github-actions/tree/main/compliance/gather-findings/security-hub#tagging-aws-resources"
+          exit 1
+        fi
+        CLI_INPUT_YAML="Filters:
+          ComplianceStatus:
+            - Comparison: EQUALS
+              Value: FAILED
+          ResourceTags:
+            - Key: SourceRepoID
+              Value: '${REPO_ID}'
+              Comparison: EQUALS
+          RecordState:
+            - Value: ACTIVE
+              Comparison: EQUALS
+        "
+        echo "YAML QUERY >>" 
+        echo $CLI_INPUT_YAML
+        echo "<< YAML QUERY"
+        aws securityhub get-findings --cli-input-yaml "$CLI_INPUT_YAML" > security-hub-findings.json
+        TABLE_COLUMNS='AwsAccountName,Title,Description,ResourceId,WorkflowStatus,Severity,ProductARN,GeneratorID,ProcessedAt'
+        echo $TABLE_COLUMNS >> $TMP_DIR/aws-securityhub-finding-${REPO_ID}.csv
+        cat security-hub-findings.json | \
+             jq -r '.Findings[] | [
+                 .AwsAccountName,
+                 .Title,
+                 .Description,
+                 .Resources[].Id,
+                 .Workflow.Status,
+                 .Severity.Label,
+                 .ProductArn,
+                 .GeneratorId,
+                 .ProcessedAt
+             ] | @csv' >> $TMP_DIR/aws-securityhub-finding-${REPO_ID}.csv
+
+        # ${GITHUB_ACTION_PATH}/../scripts/aws-securityhub-finding.sh "$REPO_ID" >> $TMP_DIR/aws-securityhub-finding-${REPO_ID}.csv
+        # mardown comment header
+        FINDINGS_COUNT=$(cat security-hub-findings.json | jq '.Findings | length')
+        if (( $FINDINGS_COUNT  > 0 )); then
+          echo "## ⚠️ AWS SecurityHub Findings (total $FINDINGS_COUNT) ⚠️" >> COMMENT.md
+        else
+          echo "## 🟢 AWS SecurityHub Findings (total $FINDINGS_COUNT)🟢" >> COMMENT.md
+        fi
+        # mardown table header
+        echo "|$TABLE_COLUMNS|" | sed 's/,/|/g' >> COMMENT.md
+        # mardown table header seperator
+        echo "|$TABLE_COLUMNS|" | sed 's/,/|/g' | sed 's/[^|]/-/g' >> COMMENT.md
+        # mardown table body
+        if (( $FINDINGS_COUNT > 0 )); then
+          cat security-hub-findings.json | \
+               jq -r '.Findings[] | [
+                   .AwsAccountName,
+                   .Title,
+                   .Description,
+                   .Resources[].Id,
+                   .Workflow.Status,
+                   .Severity.Label,
+                   .ProductArn,
+                   .GeneratorId,
+                   .ProcessedAt
+               ] | @csv' | sed 's/\(^"\|"$\|","\)/|/g' >> COMMENT.md
+        else
+          echo "|$TABLE_COLUMNS|" | sed 's/,/|/g' | sed 's/[^|]/ /g' >> COMMENT.md
+        fi
+
+        cat COMMENT.md >> $GITHUB_STEP_SUMMARY
+
+        if [[ "$EVENT_NAME" == "pull_request" ]]; then
+          PR_NUMBER=$(gh pr view $GITHUB_HEAD_REF --json number --jq '.number')
+          gh pr comment $PR_NUMBER --edit-last --body-file COMMENT.md || gh pr comment $PR_NUMBER --body-file COMMENT.md
+        fi
+
+        
+    - uses: actions/upload-artifact@v4
+      with:
+        name: aws-securityhub-findings
+        path: ${{ env.TMP_DIR }}
